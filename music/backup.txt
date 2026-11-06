@@ -1,0 +1,425 @@
+script.js
+
+
+document.addEventListener("DOMContentLoaded", () => {
+    const audioPlayer = document.getElementById("audioPlayer");
+    const playPauseBtn = document.getElementById("playPauseBtn");
+    const seekSlider = document.getElementById("seekSlider");
+    const currentTimeEl = document.getElementById("currentTime");
+    const durationTimeEl = document.getElementById("durationTime");
+    const currentSongTitle = document.getElementById("currentSongTitle");
+    const artIcon = document.querySelector(".fa-spin-hover");
+
+    const modeTabBtn = document.getElementById("modeTabBtn");
+    const themeSelector = document.getElementById("themeSelector");
+    const themeColorInput = document.getElementById("themeColor");
+    const sensitivitySlider = document.getElementById("sensitivitySlider");
+    
+    const canvas = document.getElementById("visualizer");
+    const ctx = canvas.getContext("2d");
+
+    let audioCtx, analyser, source, masterGain;
+    let eqBands = [];
+    let isContextRunning = false;
+    let particlesArray =[];
+    let songList =[];
+    let currentSongIndex = 0;
+    let visualizerSensitivity = 1;
+
+    // Responsive Canvas
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // Hide/Show Panels Logic
+    const toggleUiBtn = document.getElementById("toggleUiBtn");
+    const mainPanels = document.getElementById("mainPanels");
+    let isUiVisible = true;
+    toggleUiBtn.addEventListener("click", () => {
+        isUiVisible = !isUiVisible;
+        if(isUiVisible) {
+            mainPanels.classList.remove("hidden");
+            toggleUiBtn.innerHTML = '<i class="fas fa-eye-slash"></i> Hide Panels';
+        } else {
+            mainPanels.classList.add("hidden");
+            toggleUiBtn.innerHTML = '<i class="fas fa-eye"></i> Show Panels';
+        }
+    });
+
+    // Sensitivity Slider
+    sensitivitySlider.addEventListener("input", (e) => {
+        visualizerSensitivity = parseFloat(e.target.value);
+    });
+
+    // Init Audio Context & EQ (Distortion Free)
+    function initAudioContext() {
+        if (isContextRunning) return;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.85; // Visualizer স্মুথ করার জন্য
+
+        // Master Gain (Headroom) - সাউন্ড যেন না ফাটে
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0.8; 
+
+        const bandFrequencies =[60, 250, 1000, 4000, 12000];
+        eqBands = bandFrequencies.map(freq => {
+            let filter = audioCtx.createBiquadFilter();
+            filter.type = "peaking";
+            filter.frequency.value = freq;
+            filter.Q.value = 1.0; // Q-Factor কমানো হয়েছে ন্যাচারাল সাউন্ডের জন্য
+            filter.gain.value = 0;
+            return filter;
+        });
+
+        // Connection Chain: Source -> MasterGain -> EQ -> Analyser -> Output
+        masterGain.connect(eqBands[0]);
+        eqBands.reduce((prev, curr) => {
+            prev.connect(curr);
+            return curr;
+        }).connect(analyser);
+        analyser.connect(audioCtx.destination);
+
+        isContextRunning = true;
+        drawVisualizer();
+    }
+
+    // Connect Audio Source
+    function connectAudioElement() {
+        initAudioContext();
+        if (source) source.disconnect();
+        source = audioCtx.createMediaElementSource(audioPlayer);
+        source.connect(masterGain); // Master gain এ কানেক্ট হবে
+    }
+
+    // EQ Sliders Event
+    document.querySelectorAll(".eq-band").forEach((slider, index) => {
+        slider.addEventListener("input", (e) => {
+            if (audioCtx) eqBands[index].gain.value = parseFloat(e.target.value);
+        });
+    });
+
+    // EQ Reset Logic
+    document.getElementById("resetEqBtn").addEventListener("click", () => {
+        document.querySelectorAll(".eq-band").forEach((slider, index) => {
+            slider.value = 0; // স্লাইডার 0 তে আনা
+            if (audioCtx) eqBands[index].gain.value = 0; // ফিল্টার 0 তে আনা
+        });
+    });
+
+    // --- Custom Player Controls ---
+    function formatTime(seconds) {
+        let min = Math.floor(seconds / 60);
+        let sec = Math.floor(seconds % 60);
+        return `${min}:${sec < 10 ? '0'+sec : sec}`;
+    }
+
+    function togglePlayPause() {
+        if (audioPlayer.paused) {
+            if (!source) connectAudioElement();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            audioPlayer.play();
+        } else {
+            audioPlayer.pause();
+        }
+    }
+
+    playPauseBtn.addEventListener("click", togglePlayPause);
+
+    audioPlayer.addEventListener("play", () => {
+        playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+        artIcon.classList.add("playing");
+    });
+
+    audioPlayer.addEventListener("pause", () => {
+        playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+        artIcon.classList.remove("playing");
+    });
+
+    audioPlayer.addEventListener("timeupdate", () => {
+        if (audioPlayer.duration) {
+            seekSlider.value = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+            currentTimeEl.innerText = formatTime(audioPlayer.currentTime);
+            durationTimeEl.innerText = formatTime(audioPlayer.duration);
+        }
+    });
+
+    seekSlider.addEventListener("input", () => {
+        audioPlayer.currentTime = (seekSlider.value / 100) * audioPlayer.duration;
+    });
+
+    audioPlayer.addEventListener("ended", playNextSong);
+    document.getElementById("nextBtn").addEventListener("click", playNextSong);
+    document.getElementById("prevBtn").addEventListener("click", playPrevSong);
+
+    function playNextSong() {
+        if(songList.length > 0) {
+            currentSongIndex = (currentSongIndex + 1) % songList.length;
+            loadAndPlay(songList[currentSongIndex]);
+        }
+    }
+
+    function playPrevSong() {
+        if(songList.length > 0) {
+            currentSongIndex = (currentSongIndex - 1 + songList.length) % songList.length;
+            loadAndPlay(songList[currentSongIndex]);
+        }
+    }
+
+    function loadAndPlay(song) {
+        audioPlayer.src = song.file_path;
+        currentSongTitle.innerText = song.title;
+        togglePlayPause();
+    }
+
+    // --- Browser Tracking API ---
+    modeTabBtn.addEventListener("click", async () => {
+        try {
+            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+            initAudioContext();
+            if (source) source.disconnect();
+            audioPlayer.pause(); 
+            source = audioCtx.createMediaStreamSource(stream);
+            source.connect(masterGain);
+            
+            currentSongTitle.innerText = "Tracking Live Audio...";
+            artIcon.classList.add("playing");
+
+            stream.getVideoTracks()[0].addEventListener('ended', () => {
+                currentSongTitle.innerText = "Stopped Tracking";
+                artIcon.classList.remove("playing");
+            });
+        } catch (err) {
+            alert("Share a tab and enable 'Share audio'.");
+        }
+    });
+
+    // --- Playlist File Upload Logic ---
+    function fetchSongs() {
+        fetch("fetch_songs.php")
+        .then(res => res.json())
+        .then(data => {
+            songList = data;
+            const playlist = document.getElementById("playlist");
+            playlist.innerHTML = "";
+            data.forEach((song, index) => {
+                let li = document.createElement("li");
+                li.innerHTML = `<span style="flex:1;"><i class="fas fa-music"></i> ${song.title}</span> <button class="delete-btn" data-id="${song.id}"><i class="fas fa-trash"></i></button>`;
+                li.querySelector("span").addEventListener("click", () => { currentSongIndex = index; loadAndPlay(song); });
+                li.querySelector(".delete-btn").addEventListener("click", function(e) {
+                    e.stopPropagation();
+                    if(confirm("Delete this song?")) {
+                        let formData = new FormData(); formData.append("id", this.getAttribute("data-id"));
+                        fetch("delete.php", { method: "POST", body: formData }).then(() => fetchSongs());
+                    }
+                });
+                playlist.appendChild(li);
+            });
+        });
+    }
+
+    document.getElementById("audioFile").addEventListener("change", function() {
+        const fileLabel = document.querySelector(".upload-actions label");
+        if (this.files[0]) fileLabel.innerHTML = `<i class="fas fa-check-circle"></i> File Selected`;
+    });
+
+    document.getElementById("uploadBtn").addEventListener("click", () => {
+        const title = document.getElementById("songTitle").value;
+        const file = document.getElementById("audioFile").files[0];
+        if(!title || !file) return alert("Please provide title and file");
+
+        let formData = new FormData(); formData.append("title", title); formData.append("audio_file", file);
+        fetch("upload.php", { method: "POST", body: formData })
+        .then(res => res.json())
+        .then(data => {
+            if(data.status === "success") {
+                document.getElementById("songTitle").value = "";
+                document.getElementById("audioFile").value = "";
+                document.querySelector(".upload-actions label").innerHTML = `<i class="fas fa-folder-open"></i> File`;
+                fetchSongs();
+            }
+        });
+    });
+
+    fetchSongs();
+
+    // --- Visualizer Drawing (With Sensitivity) ---
+    // --- Modular Visualizer Drawing Logic ---
+    function drawVisualizer() {
+        requestAnimationFrame(drawVisualizer);
+        if (!analyser) return;
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        analyser.getByteFrequencyData(dataArray);
+
+        // গ্লাস-মরফিজম ফেড ইফেক্ট (পেছনের ক্যানভাসের জন্য)
+        ctx.fillStyle = "rgba(5, 5, 5, 0.3)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const theme = themeSelector.value;
+        const selectedColor = themeColorInput.value;
+
+        // গ্লোবাল অবজেক্ট থেকে থিম অনুযায়ী আলাদা ফাইলের ফাংশন কল করা
+        if (window.AudioVisualizers && window.AudioVisualizers[theme]) {
+            window.AudioVisualizers[theme](ctx, canvas, dataArray, bufferLength, selectedColor, visualizerSensitivity);
+        }
+    }
+
+    class Particle {
+        constructor(x, y, bass, color) {
+            this.x = x; this.y = y;
+            this.size = Math.random() * 5 + 2;
+            this.speedX = (Math.random() - 0.5) * (bass / 10);
+            this.speedY = (Math.random() - 0.5) * (bass / 10);
+            this.color = color;
+            this.life = 100;
+        }
+        update() { this.x += this.speedX; this.y += this.speedY; this.life -= 2; }
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+});
+
+===========================================================
+
+
+index.php
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Audio Visualizer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="visualizer"></canvas>
+    <audio id="audioPlayer" crossorigin="anonymous"></audio>
+
+    <div class="app-wrapper">
+        <!-- Top Navbar -->
+        <header class="top-nav glass">
+            <div class="logo"><i class="fas fa-wave-square"></i> AudioVision</div>
+            <div class="top-controls" style="display:flex; gap:10px;">
+                <!-- Hide Panels Button -->
+                <button id="toggleUiBtn" class="btn glass-btn"><i class="fas fa-eye-slash"></i> Hide Panels</button>
+                <button id="modeTabBtn" class="btn glass-btn"><i class="fas fa-desktop"></i> Track Browser Audio</button>
+            </div>
+        </header>
+
+        <!-- Main Content Area (Playlist & EQ) -->
+        <main class="main-content" id="mainPanels">
+            <!-- Sidebar: Playlist & Upload -->
+            <aside class="sidebar glass">
+                <div class="section-header"><h3><i class="fas fa-music"></i> My Library</h3></div>
+                
+                <div class="upload-box">
+                    <input type="text" id="songTitle" placeholder="Song Title" required>
+                    <input type="file" id="audioFile" accept="audio/*" style="display: none;" required>
+                    <div class="upload-actions">
+                        <label for="audioFile" class="btn outline-btn"><i class="fas fa-folder-open"></i> File</label>
+                        <button id="uploadBtn" class="btn primary-btn"><i class="fas fa-upload"></i> Upload</button>
+                    </div>
+                </div>
+
+                <ul id="playlist" class="custom-scroll"></ul>
+            </aside>
+
+            <!-- Equalizer Panel -->
+            <aside class="eq-panel glass">
+                <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3><i class="fas fa-sliders-h"></i> 5-Band EQ</h3>
+                    <!-- EQ Reset Button -->
+                    <button id="resetEqBtn" class="btn outline-btn" style="padding: 4px 10px; font-size: 11px;"><i class="fas fa-undo"></i> Reset</button>
+                </div>
+                <!-- EQ Sliders (-12 to 12 for clean sound) -->
+                <div class="eq-sliders">
+                    <div class="slider-wrapper"><input type="range" class="eq-band" data-freq="60" min="-12" max="12" value="0"><span>60Hz</span></div>
+                    <div class="slider-wrapper"><input type="range" class="eq-band" data-freq="250" min="-12" max="12" value="0"><span>250Hz</span></div>
+                    <div class="slider-wrapper"><input type="range" class="eq-band" data-freq="1000" min="-12" max="12" value="0"><span>1kHz</span></div>
+                    <div class="slider-wrapper"><input type="range" class="eq-band" data-freq="4000" min="-12" max="12" value="0"><span>4kHz</span></div>
+                    <div class="slider-wrapper"><input type="range" class="eq-band" data-freq="12000" min="-12" max="12" value="0"><span>12kHz</span></div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Bottom Player Bar -->
+        <footer class="bottom-player glass">
+            <div class="track-info">
+                <div class="art"><i class="fas fa-compact-disc fa-spin-hover"></i></div>
+                <div class="details">
+                    <h4 id="currentSongTitle">No track selected</h4>
+                    <p>AudioVision Player</p>
+                </div>
+            </div>
+
+            <div class="player-controls">
+                <div class="control-buttons">
+                    <button class="icon-btn" id="prevBtn"><i class="fas fa-step-backward"></i></button>
+                    <button class="icon-btn play-pause-btn" id="playPauseBtn"><i class="fas fa-play"></i></button>
+                    <button class="icon-btn" id="nextBtn"><i class="fas fa-step-forward"></i></button>
+                </div>
+                <div class="progress-bar">
+                    <span id="currentTime">0:00</span>
+                    <input type="range" id="seekSlider" value="0" min="0" max="100" step="1">
+                    <span id="durationTime">0:00</span>
+                </div>
+            </div>
+
+            <div class="visualizer-settings">
+                <!-- Sensitivity Slider -->
+                <i class="fas fa-bolt" title="Sensitivity" style="color: #888; font-size: 14px;"></i>
+                <input type="range" id="sensitivitySlider" min="0.3" max="2" step="0.1" value="1" title="Visualizer Sensitivity" style="width: 50px;">
+                
+                <select id="themeSelector" class="custom-select">
+                    <option value="bars">Bars (Classic)</option>
+                    <option value="circle">Pulse Circle</option>
+                    <option value="wave">Smooth Wave</option>
+                    <option value="symmetric">Symmetric</option>
+                    <option value="particles">Beat Particles</option>
+                    <!-- নতুন দুটি প্রিমিয়াম থিম -->
+                    <option value="galaxy">Premium: Galaxy</option>
+                    <option value="polygon">Premium: Neon Polygon</option>
+                    <option value="sunburst">Premium: Sunburst</option>
+                    <option value="terrain">Premium: Cyber Mountain</option>
+                    <option value="orbits">Premium: Dual Orbits</option>
+                    <option value="my_custom_theme">Premium: My Custom Theme</option>
+                    <option value="imran_a">Premium: Imran's Theme</option>
+                </select>
+                <input type="color" id="themeColor" value="#00ffcc" title="Theme Color">
+            </div>
+        </footer>
+    </div>
+<!-- ১. গ্লোবাল ভিজুয়ালাইজার অবজেক্ট তৈরি -->
+    <script> window.AudioVisualizers = {}; </script>
+    
+    <!-- ২. সব ভিজুয়ালাইজার ফাইলগুলো লিংক করা -->
+    <script src="visualizers/bars.js"></script>
+    <script src="visualizers/circle.js"></script>
+    <script src="visualizers/wave.js"></script>
+    <script src="visualizers/symmetric.js"></script>
+    <script src="visualizers/particles.js"></script>
+    <script src="visualizers/galaxy.js"></script>
+    <script src="visualizers/polygon.js"></script>
+    <script src="visualizers/sunburst.js"></script>
+    <script src="visualizers/terrain.js"></script>
+    <script src="visualizers/orbits.js"></script>
+    <script src="visualizers/my_custom_theme.js"></script>
+    <script src="visualizers/imran_a.js"></script>
+
+    <!-- ৩. সবশেষে মূল স্ক্রিপ্ট ফাইল -->
+    <script src="script.js"></script>
+</body>
+</html>
